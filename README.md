@@ -1,78 +1,8 @@
-<div align="center">
+# PSSG Readme
 
-
-
-# RepoHyper: Better Context Retrieval Is All You Need for Repository-Level Code Completion
-[![arXiv](https://img.shields.io/badge/arXiv-2305.06156-b31b1b.svg)](https://arxiv.org/abs/2403.06095)
-
-</div>
-
-## Introduction
-
-We introduce RepoHyper, an novel framework transforming code completion into a seamless end-to-end process for use case on real world repositories. Traditional approaches depend on integrating contexts into Code Language Models (CodeLLMs), often presuming these contexts to be inherently accurate. However, we've identified a gap: the standard benchmarks don't always present relevant contexts.
-
-To address this, RepoHyper proposes in three novel steps:
-
-- Construction of a Code Property Graph, establishing a rich source of context.
-- A novel Search Algorithm for pinpointing the exact context needed.
-- The Expand Algorithm, designed to uncover implicit connections between code elements (akin to the Link Prediction problem on social network mining).
-
-Our comprehensive evaluations reveal that RepoHyper sets a new standard, outperforming other strong baseline on the RepoBench benchmark.
-
-#### Paper: https://arxiv.org/abs/2403.06095
-
-## Installation
-
-```bash
-pip install -r requirements.txt
-```
-
-## Architecture
-<img src="arch.png" width="750" height="350">
-
-RepoHyper is a two-stage model. The first stage is a search-then-expand algorithm on Repo-level Semantic Graph (RSG) then use GNN link predictor that reranks the retrieved results from KNN search and graph expansion. The second stage is any code LLM model that takes the retrieved context and predicts the next line of code.
-
-## Checkpoints
-We provide the checkpoints for the GNN model [here](https://ai4code.blob.core.windows.net/repohyper/model_10.pt). The GNN model is trained on the RepoBench-R dataset with gold labels. We also provide [RepoBench-R RGSs](https://ai4code.blob.core.windows.net/repohyper/repos_graphs_labeled_link_with_called_imported_edges) to reproduce the results.
-
-
-## Usage
-
-### Data preparation
-
-We need to clone [Repobench dataset](https://github.com/Leolty/repobench/tree/main/data) into `data/repobench` folder. Then download all the unique repositories used in this dataset
-
-```bash
-python3 -m scripts.data.download_repos --dataset data/repobench --output data/repobench/repos --num-processes 8
-```
-
-The next step is to generate call graph using PyCG. We use the following command to generate call graph for each repository. 60 processes are used to speed up the process (maximum RAM usage is around 350GB).
-
-```bash
-python3 -m scripts.data.generate_call_graph --repos data/repobench/repos --output data/repobench/repos_call_graphs --num-processes 60
-```
-
-Now we need to generate embeddings for each node for node embedding as well as create adjacency matrix by aligning Tree-sitter functions, classes, methods with call graph nodes. 
-```bash
-python3 -m scripts.data.repo_to_embeddings --repos data/repobench/repos --call-graphs data/repobench/repos_call_graphs --output data/repobench/repos_graphs --num-processes 60
-```
-
-Final step is labeling which node is the most optimal for predicting next line using gold snippet from repobench dataset. In this step, we also generate the training data for GNN training by extracting the subgraph using KNN search and RSG expansion.
-```bash
-python3 -m scripts.data.matching_repobench_graphs -search_policy "knn-pattern" --rsg_path "YOUR RSG PATH" --output data/repobench/repos_graphs_labeled 
-```
-
-### Training
-We can train GNN linker seperately using following script
-
-```bash
-CUDA_VISIBLE_DEVICES=0 deepspeed train_gnn.py --deepspeed --deepspeed_config ds_config.json --arch GraphSage --layers 1 --data-path data/repobench/repos_graphs_labeled_cosine_radius_unix --output data/repobench/gnn_model --num-epochs 10 --batch-size 16
-```
-
-### Evaluation for RepoBench-P
-
-We can evaluate the model using the following script
-
-```bash
-python3 scripts/evaluate_llm.py --data data/repobench/repos_graphs_matched_retrieved --model "gpt3.5" --num-workers 8
-```
+## Explanation of old repo layout and translation:
+The repohyper repo, along side included instructions, can be summarized as follows:
+* download the repobench dataset (the current branch doesn't work, use commit 4e4c4c837f81b24da5929c6b09908d35ea59d3dc)
+* Generate call graphs. They did this using pycg, a deprecated tool, and its hard to find an equivalent for CUDA. Our options are to compile the CUDA code and run the llvm opt tool, compile and use the cuda NVLINK (not the phyiscal connector), or use [this github repo](https://github.com/Vermeille/clang-callgraph/tree/master) (clang oriented but because clang 3.8+ supports cuda (but does lag a few versions behind) we can configure the script using the compile_commands.json to support cuda). I think the script is a better option because the other two options are llvm/assembler callgraphs and may suffer from optimization and are a bit more difficult to parse because of all the junk they contain. See this [SO post](https://stackoverflow.com/questions/11423266/call-graphs-for-cuda)
+* **THIS STEP NEEDS THE MOST WORK**  Generate "embeddings for each node" -- this step is where tree sitter is invoked. Essentially this uses the call graph to validate the tree sitter parsing of functions, classes etc, and then generates a more comiplcated graph structure and embeds it with either t5 or Unixcoder. 
+   * Source code comment often refers to ``` # checking whether function is in the call graph and add call graph edges if there's any; # checking whether file is in the graph nodes and add call graph edges if there's any; ``` It also appears that in the function `parse_source` the returned `context_files` object does have a relative path for each file, so maybe that is enough context for directory structure? we'll see.   `load_contexts_then_embed`: find this file in the source code (repo_to_graph.py), it has a doc string that very nicely summarizes the structure of the output of `parse_source` and how the embedding is done and complicated graph is constructed.
